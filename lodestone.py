@@ -7,37 +7,47 @@ import time
 
 # Third party imports
 import pandas as pd
+import sqlalchemy as sa
+from sqlalchemy.exc import IntegrityError
+
+# Pull start time of script
+t_start = time.time()
+
+# Set final id to pull
+end_id = 1000000
 
 # Load file name
 if len(sys.argv) == 1:
-    file = "lodestone.csv"
+    file = "database/database.db"
 else:
     # Ensure command passes csv file
-    if sys.argv[1][-3:] != 'csv':
-        raise ValueError("Must input file with csv extension.")
+    if sys.argv[1][-2:] != 'db':
+        raise ValueError("Must input file with db extension.")
 
     file = sys.argv[1]
 
 # Make column list for dataframe
 col_list = [
-    "id_no", "fname", "lname", "race", "subrace",
-    "gender", "nameday", "guardian", "grand_company",
+    "id", "private", "fname", "lname", "race", "srace",
+    "gender", "nameday", "guardian", "gc",
     "gc_rank", "pld", "mrd", "drk", "gnb", "whm", "sch",
     "ast", "sge", "mnk", "drg", "nin", "sam", "rpr",
     "vpr", "brd", "mch", "dnc", "blm", "acn", "rdm",
-    "blu", "crp", "bsm", "arm", "gsm", "ltw", "wvr",
-    "alc", "cul", "mnr", "btn", "fsh"
+    "pct", "blu", "crp", "bsm", "arm", "gsm", "ltw",
+    "wvr", "alc", "cul", "mnr", "btn", "fsh"
 ]
 
-# Load existing csv into pandas dataframe
+# Connect to existing database if it exists
 if os.path.isfile(file):
-    df = pd.read_csv(file)
+    # Connect to database
+    eng = sa.create_engine("sqlite:///" + file)
+    # Form connection from engine
+    with eng.connect() as con:
+        max_id = con.execute("SELECT MAX(id) FROM char").fetchone()[0]
+    if max_id is None:
+        max_id = 1
 else:
-    df = pd.DataFrame(columns=col_list)
-
-# Set index for ease of finding things
-# if "id_no" in df.columns:
-#     df.set_index("id_no", inplace=True)
+    raise NameError("No database found")
 
 # Make base url to be filled by a for loop
 url = "https://eu.finalfantasyxiv.com/lodestone/character/{}/"
@@ -52,20 +62,22 @@ def convert_lvl(str):
     else:
         return str
 
+# Start session to reduce pull time
+session = requests.Session()
 
 # Loop over range of values to pull
-for i in range(1, 5000):
+for i in range(max_id, end_id):
     print(i)
-    # Verify id is not already filled in dataframe
-    if len(df.loc[df['id_no'] == i]) >= 1:
-        continue
+    # Refresh session
+    if i % 100 == 0:
+        session = requests.Session()
 
     # Pull html
     pulled = False
     # This loop is necessary because my connection is not particularly stable.
     while not pulled:
         try:
-            h = requests.get(url.format(i))
+            h = session.get(url.format(i))
             pulled = True
         except ConnectionError:
             print(f"Connection error for character {i}")
@@ -85,6 +97,27 @@ for i in range(1, 5000):
     
     fname = x.xpath("/html/head/title/text()")[0].split("|")[0].split(" ")[0]
     lname = x.xpath("/html/head/title/text()")[0].split("|")[0].split(" ")[1]
+
+    # Check for private profile
+    try:
+        private = "profile is private" in x.xpath("//p[@class='parts__zero']/text()")[0]
+        print(fname + " " + lname + " (" + str(i) + ") is private.")
+    except Exception:
+        private = False
+
+    # If char is private push the only data we can pull to database.
+    if private:
+        try:
+            with eng.connect() as con:
+                con.execute(sa.text(
+                    f"""
+                    INSERT INTO char(id, private, fname, lname)
+                    VALUES ({i}, {private}, "{fname}", "{lname}");
+                    """
+                ))
+        except IntegrityError:
+            pass
+        continue
 
     # Pull Race and Gender
     race = x.xpath("//div[@class='character-block']/div[@class='character-block__box']/p[@class='character-block__name']/text()")[0]
@@ -194,39 +227,116 @@ for i in range(1, 5000):
     print("Botanist level: " + str(bot_lvl))
     print("Fisher level: " + str(fsh_lvl))
 
-    # Form temporary dataframe
-    tmp_df = pd.DataFrame({
-        x: [y] for y, x in zip(
-        [i, fname, lname, race, srace, gender,
-        nameday, guardian, gc, gc_rank, pal_lvl,
-        mar_lvl, dkn_lvl, gbk_lvl, whm_lvl, sch_lvl,
-        ast_lvl, sag_lvl, mnk_lvl, lnc_lvl, nin_lvl,
-        sam_lvl, rpr_lvl, vpr_lvl, brd_lvl, mch_lvl,
-        dnc_lvl, blk_lvl, smn_lvl, pct_lvl, blu_lvl,
-        crp_lvl, bls_lvl, arm_lvl, gld_lvl, ltw_lvl,
-        wev_lvl, alc_lvl, cul_lvl, mnr_lvl, bot_lvl,
-        fsh_lvl], col_list
-        )
-        }
-    )
-
-    # Combine temp dataframe and standard dataframe
+    # Push data into database
     try:
-        df_to_upload = pd.concat([df_to_upload, tmp_df])
-    except NameError:
-        df_to_upload = pd.concat([df, tmp_df])
+        with eng.connect() as con:
+            con.execute(sa.text(
+            f"""
+                INSERT INTO char(
+                    id,
+                    private,
+                    fname,
+                    lname,
+                    race,
+                    srace,
+                    gender,
+                    nameday,
+                    guardian,
+                    gc,
+                    gc_rank,
+                    pld,
+                    mrd,
+                    drk,
+                    gnb,
+                    whm,
+                    sch,
+                    ast,
+                    sge,
+                    mnk,
+                    drg,
+                    nin,
+                    sam,
+                    rpr,
+                    vpr,
+                    brd,
+                    mch,
+                    dnc,
+                    blm,
+                    acn,
+                    rdm,
+                    pct,
+                    blu,
+                    crp,
+                    bsm,
+                    arm,
+                    gsm,
+                    ltw,
+                    wvr,
+                    alc,
+                    cul,
+                    mnr,
+                    btn,
+                    fsh
+                )
+                VALUES (
+                    {i},
+                    {private},
+                    "{fname}",
+                    "{lname}",
+                    "{race}",
+                    "{srace}",
+                    "{gender}",
+                    "{nameday}",
+                    "{guardian}",
+                    "{gc}",
+                    "{gc_rank}",
+                    {pal_lvl},
+                    {mar_lvl},
+                    {dkn_lvl},
+                    {gbk_lvl},
+                    {whm_lvl},
+                    {sch_lvl},
+                    {ast_lvl},
+                    {sag_lvl},
 
-    # Wait before the next pull
-    # time.sleep(0.5)
+                    {mnk_lvl},
+                    {lnc_lvl},
+                    {nin_lvl},
+                    {sam_lvl},
+                    {rpr_lvl},
+                    {vpr_lvl},
+                    {brd_lvl},
+                    {mch_lvl},
+                    {dnc_lvl},
+                    {blk_lvl},
+                    {smn_lvl},
+                    {red_lvl},
+                    {pct_lvl},
+                    {blu_lvl},
 
-# Save file
-try:
-    if os.path.isfile(file):
-        df_to_upload.to_csv(file, header=True, index=False)
-    else:
-        df_to_upload.to_csv(file, index=False)
-except NameError:
-    print("No dataframe to save")
+                    {crp_lvl},
+                    {bls_lvl},
+                    {arm_lvl},
+                    {gld_lvl},
+                    {ltw_lvl},
+                    {wev_lvl},
+                    {alc_lvl},
+                    {cul_lvl},
+
+                    {mnr_lvl},
+                    {bot_lvl},
+                    {fsh_lvl}
+                );
+            """
+            ))
+    except IntegrityError:
+            pass
+
+# Pull time at end of script
+t_end = time.time()
+
+# Print the runtime of the program
+print("\n\nRuntime = " + str(t_end - t_start) + " seconds.")
 
 if __name__ == "__main__":
     print("Name == main")
